@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Manga Translator</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.17.263/pdf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@2.1.5/dist/tesseract.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.29.0/dist/transformers.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+      text-align: center;
+    }
+    input, button {
+      margin: 10px 0;
+    }
+    #output {
+      margin-top: 20px;
+      display: flex;
+      justify-content: space-around;
+    }
+    .text-box {
+      width: 45%;
+      border: 1px solid #ccc;
+      padding: 10px;
+      max-height: 400px;
+      overflow: auto;
+    }
+    #progress {
+      margin: 10px 0;
+      color: green;
+    }
+    #errors {
+      color: red;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Japanese Manga to Korean Translator</h1>
+  <input type="file" id="pdf-upload" accept="application/pdf">
+  <label>
+    <input type="checkbox" id="enable-ocr" checked> Use OCR for image-based PDFs
+  </label>
+  <label>
+    OCR Mode:
+    <select id="ocr-mode">
+      <option value="jpn_vert" selected>Vertical Japanese</option>
+      <option value="jpn">Horizontal Japanese</option>
+    </select>
+  </label>
+  <button id="process-button">Translate PDF</button>
+  <p id="progress"></p>
+  <p id="errors"></p>
+  <div id="output">
+    <div class="text-box" id="original-text">Original text will appear here...</div>
+    <div class="text-box" id="translated-text">Translated text will appear here...</div>
+  </div>
+
+  <script>
+    async function extractTextFromPDF(file, enableOCR, ocrMode) {
+      const fileReader = new FileReader();
+      const pdfData = await new Promise((resolve, reject) => {
+        fileReader.onload = () => resolve(new Uint8Array(fileReader.result));
+        fileReader.onerror = reject;
+        fileReader.readAsArrayBuffer(file);
+      });
+
+      const pdf = await pdfjsLib.getDocument({ data: pdfData }).promise;
+      let extractedText = "";
+      const errors = [];
+
+      for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+        try {
+          document.getElementById("progress").textContent = `Processing page ${pageNumber} of ${pdf.numPages}...`;
+
+          const page = await pdf.getPage(pageNumber);
+          const textContent = await page.getTextContent();
+
+          if (textContent.items.length > 0 && !enableOCR) {
+            extractedText += textContent.items.map((item) => item.str).join(" ");
+          } else if (enableOCR) {
+            const viewport = page.getViewport({ scale: 2 });
+            const canvas = document.createElement("canvas");
+            const context = canvas.getContext("2d");
+            canvas.height = viewport.height;
+            canvas.width = viewport.width;
+            await page.render({ canvasContext: context, viewport }).promise;
+
+            const image = canvas.toDataURL("image/png");
+            const { data: ocrText } = await Tesseract.recognize(image, ocrMode);
+            extractedText += ocrText;
+          }
+        } catch (error) {
+          console.error(`Error on page ${pageNumber}:`, error);
+          errors.push(`Page ${pageNumber} failed: ${error.message}`);
+        }
+      }
+
+      if (errors.length > 0) {
+        document.getElementById("errors").textContent = errors.join(" | ");
+      }
+
+      return extractedText;
+    }
+
+    async function loadModel() {
+      const modelName = "facebook/m2m100_418M";
+      const model = await transformers.TranslationPipeline.load(modelName);
+      return model;
+    }
+
+    async function translateText(model, text, sourceLang, targetLang) {
+      const maxChunkLength = 400; // Safe limit for memory
+      const chunks = text.match(new RegExp(`.{1,${maxChunkLength}}`, "g")) || [];
+      let translatedText = "";
+      const errors = [];
+
+      for (let i = 0; i < chunks.length; i++) {
+        try {
+          document.getElementById("progress").textContent = `Translating chunk ${i + 1} of ${chunks.length}...`;
+          const result = await model(chunks[i], { src_lang: sourceLang, tgt_lang: targetLang });
+          translatedText += result[0].translation_text + " ";
+        } catch (error) {
+          console.error(`Error translating chunk ${i + 1}:`, error);
+          errors.push(`Chunk ${i + 1} failed: ${error.message}`);
+        }
+      }
+
+      if (errors.length > 0) {
+        document.getElementById("errors").textContent = errors.join(" | ");
+      }
+
+      return translatedText;
+    }
+
+    document.getElementById("process-button").addEventListener("click", async () => {
+      const fileInput = document.getElementById("pdf-upload").files[0];
+      const enableOCR = document.getElementById("enable-ocr").checked;
+      const ocrMode = document.getElementById("ocr-mode").value;
+
+      if (!fileInput) {
+        alert("Please upload a PDF file.");
+        return;
+      }
+
+      document.getElementById("original-text").textContent = "Extracting text...";
+      document.getElementById("translated-text").textContent = "Translating...";
+      document.getElementById("progress").textContent = "";
+      document.getElementById("errors").textContent = "";
+
+      try {
+        const extractedText = await extractTextFromPDF(fileInput, enableOCR, ocrMode);
+        document.getElementById("original-text").textContent = extractedText;
+
+        const model = await loadModel();
+        const translatedText = await translateText(model, extractedText, "ja", "ko");
+        document.getElementById("translated-text").textContent = translatedText;
+
+        document.getElementById("progress").textContent = "Translation completed!";
+      } catch (error) {
+        console.error(error);
+        alert("An error occurred: " + error.message);
+      }
+    });
+  </script>
+</body>
+</html>
