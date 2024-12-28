@@ -4,165 +4,191 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Manga Translator</title>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.17.263/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+  <script>
+    // Configure the worker source for PDF.js
+    pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js";
+  </script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@2.1.5/dist/tesseract.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.29.0/dist/transformers.js"></script>
   <style>
     body {
       font-family: Arial, sans-serif;
       margin: 20px;
       text-align: center;
     }
+    #container {
+      max-width: 800px;
+      margin: 0 auto;
+    }
     input, button {
       margin: 10px 0;
-    }
-    #output {
-      margin-top: 20px;
-      display: flex;
-      justify-content: space-around;
-    }
-    .text-box {
-      width: 45%;
-      border: 1px solid #ccc;
       padding: 10px;
-      max-height: 400px;
-      overflow: auto;
+      font-size: 16px;
     }
     #progress {
-      margin: 10px 0;
       color: green;
+      margin-top: 20px;
     }
-    #errors {
+    #output {
+      display: flex;
+      flex-direction: column;
+      margin-top: 20px;
+    }
+    .text-box {
+      border: 1px solid #ccc;
+      padding: 10px;
+      margin: 10px 0;
+      height: 200px;
+      overflow: auto;
+    }
+    .title {
+      font-size: 18px;
+      margin: 5px 0;
+      font-weight: bold;
+    }
+    .error {
       color: red;
-      margin-top: 10px;
     }
   </style>
 </head>
 <body>
-  <h1>Japanese Manga to Korean Translator</h1>
-  <input type="file" id="pdf-upload" accept="application/pdf">
-  <label>
-    <input type="checkbox" id="enable-ocr" checked> Use OCR for image-based PDFs
-  </label>
-  <label>
-    OCR Mode:
-    <select id="ocr-mode">
-      <option value="jpn_vert" selected>Vertical Japanese</option>
-      <option value="jpn">Horizontal Japanese</option>
-    </select>
-  </label>
-  <button id="process-button">Translate PDF</button>
-  <p id="progress"></p>
-  <p id="errors"></p>
-  <div id="output">
-    <div class="text-box" id="original-text">Original text will appear here...</div>
-    <div class="text-box" id="translated-text">Translated text will appear here...</div>
+  <div id="container">
+    <h1>Manga Translator</h1>
+    <p>Upload a Japanese manga PDF and extract text using OCR with language detection.</p>
+    <input type="file" id="pdf-upload" accept="application/pdf">
+    <button id="process-button">Extract and Translate</button>
+    <p id="progress"></p>
+    <div id="output">
+      <div>
+        <p class="title">Detected Text:</p>
+        <div class="text-box" id="original-text">Original text will appear here...</div>
+      </div>
+      <div>
+        <p class="title">OCR Text:</p>
+        <div class="text-box" id="ocr-text">OCR text will appear here...</div>
+      </div>
+    </div>
+    <button id="download-button" style="display:none;">Download Results</button>
   </div>
 
   <script>
-    async function extractTextFromPDF(file, enableOCR, ocrMode) {
+    const pdfjsLib = window['pdfjs-dist/build/pdf'];
+
+    // Function to extract text from PDF pages
+    async function extractPDFText(pdfFile) {
       const fileReader = new FileReader();
-      const pdfData = await new Promise((resolve, reject) => {
-        fileReader.onload = () => resolve(new Uint8Array(fileReader.result));
-        fileReader.onerror = reject;
-        fileReader.readAsArrayBuffer(file);
-      });
+      fileReader.readAsArrayBuffer(pdfFile);
 
-      const pdf = await pdfjsLib.getDocument({ data: pdfData }).promise;
-      let extractedText = "";
-      const errors = [];
+      return new Promise((resolve, reject) => {
+        fileReader.onload = async function () {
+          const pdfData = new Uint8Array(fileReader.result);
+          const pdf = await pdfjsLib.getDocument({ data: pdfData }).promise;
+          let extractedText = "";
 
-      for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
-        try {
-          document.getElementById("progress").textContent = `Processing page ${pageNumber} of ${pdf.numPages}...`;
-
-          const page = await pdf.getPage(pageNumber);
-          const textContent = await page.getTextContent();
-
-          if (textContent.items.length > 0 && !enableOCR) {
+          for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+            const page = await pdf.getPage(pageNumber);
+            const textContent = await page.getTextContent();
             extractedText += textContent.items.map((item) => item.str).join(" ");
-          } else if (enableOCR) {
-            const viewport = page.getViewport({ scale: 2 });
-            const canvas = document.createElement("canvas");
-            const context = canvas.getContext("2d");
-            canvas.height = viewport.height;
-            canvas.width = viewport.width;
-            await page.render({ canvasContext: context, viewport }).promise;
-
-            const image = canvas.toDataURL("image/png");
-            const { data: ocrText } = await Tesseract.recognize(image, ocrMode);
-            extractedText += ocrText;
           }
-        } catch (error) {
-          console.error(`Error on page ${pageNumber}:`, error);
-          errors.push(`Page ${pageNumber} failed: ${error.message}`);
-        }
-      }
 
-      if (errors.length > 0) {
-        document.getElementById("errors").textContent = errors.join(" | ");
-      }
-
-      return extractedText;
+          resolve(extractedText);
+        };
+        fileReader.onerror = reject;
+      });
     }
 
-    async function loadModel() {
-      const modelName = "facebook/m2m100_418M";
-      const model = await transformers.TranslationPipeline.load(modelName);
-      return model;
+    // Function to perform OCR with parallel processing and language detection
+    async function performOCR(pdfFile) {
+      const fileReader = new FileReader();
+      fileReader.readAsArrayBuffer(pdfFile);
+
+      return new Promise((resolve, reject) => {
+        fileReader.onload = async function () {
+          const pdfData = new Uint8Array(fileReader.result);
+          const pdf = await pdfjsLib.getDocument({ data: pdfData }).promise;
+          const promises = [];
+          const errors = [];
+
+          for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+            promises.push(
+              (async () => {
+                try {
+                  const page = await pdf.getPage(pageNumber);
+                  const viewport = page.getViewport({ scale: 2 });
+                  const canvas = document.createElement("canvas");
+                  const context = canvas.getContext("2d");
+                  canvas.height = viewport.height;
+                  canvas.width = viewport.width;
+                  await page.render({ canvasContext: context, viewport }).promise;
+
+                  // Render image and detect language
+                  const imageData = canvas.toDataURL("image/png");
+                  const detectedLang = await Tesseract.detect(imageData);
+                  const language = detectedLang.data.languages.includes("jpn")
+                    ? "jpn"
+                    : detectedLang.data.languages.includes("kor")
+                    ? "kor"
+                    : "eng"; // Default to English if no match
+
+                  // Perform OCR
+                  const { data: ocrResult } = await Tesseract.recognize(imageData, language);
+                  return ocrResult;
+                } catch (error) {
+                  errors.push(`Page ${pageNumber}: ${error.message}`);
+                  return ""; // Return empty text on failure
+                }
+              })()
+            );
+          }
+
+          const ocrResults = await Promise.all(promises);
+          if (errors.length > 0) {
+            document.getElementById("progress").innerHTML += `<p class="error">Errors: ${errors.join(", ")}</p>`;
+          }
+
+          resolve(ocrResults.join("\n"));
+        };
+        fileReader.onerror = reject;
+      });
     }
 
-    async function translateText(model, text, sourceLang, targetLang) {
-      const maxChunkLength = 400; // Safe limit for memory
-      const chunks = text.match(new RegExp(`.{1,${maxChunkLength}}`, "g")) || [];
-      let translatedText = "";
-      const errors = [];
-
-      for (let i = 0; i < chunks.length; i++) {
-        try {
-          document.getElementById("progress").textContent = `Translating chunk ${i + 1} of ${chunks.length}...`;
-          const result = await model(chunks[i], { src_lang: sourceLang, tgt_lang: targetLang });
-          translatedText += result[0].translation_text + " ";
-        } catch (error) {
-          console.error(`Error translating chunk ${i + 1}:`, error);
-          errors.push(`Chunk ${i + 1} failed: ${error.message}`);
-        }
-      }
-
-      if (errors.length > 0) {
-        document.getElementById("errors").textContent = errors.join(" | ");
-      }
-
-      return translatedText;
+    // Function to download results as a .txt file
+    function downloadResults(originalText, ocrText) {
+      const content = `--- Original Text ---\n\n${originalText}\n\n--- OCR Text ---\n\n${ocrText}`;
+      const blob = new Blob([content], { type: "text/plain" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = "manga_translation_results.txt";
+      link.click();
     }
 
     document.getElementById("process-button").addEventListener("click", async () => {
       const fileInput = document.getElementById("pdf-upload").files[0];
-      const enableOCR = document.getElementById("enable-ocr").checked;
-      const ocrMode = document.getElementById("ocr-mode").value;
-
       if (!fileInput) {
         alert("Please upload a PDF file.");
         return;
       }
 
-      document.getElementById("original-text").textContent = "Extracting text...";
-      document.getElementById("translated-text").textContent = "Translating...";
-      document.getElementById("progress").textContent = "";
-      document.getElementById("errors").textContent = "";
-
+      document.getElementById("progress").textContent = "Extracting text from PDF...";
       try {
-        const extractedText = await extractTextFromPDF(fileInput, enableOCR, ocrMode);
+        // Step 1: Extract text from PDF
+        const extractedText = await extractPDFText(fileInput);
         document.getElementById("original-text").textContent = extractedText;
 
-        const model = await loadModel();
-        const translatedText = await translateText(model, extractedText, "ja", "ko");
-        document.getElementById("translated-text").textContent = translatedText;
+        // Step 2: Perform OCR
+        document.getElementById("progress").textContent = "Performing OCR...";
+        const ocrText = await performOCR(fileInput);
+        document.getElementById("ocr-text").textContent = ocrText;
 
-        document.getElementById("progress").textContent = "Translation completed!";
+        // Show the download button
+        document.getElementById("download-button").style.display = "block";
+        document.getElementById("download-button").onclick = () =>
+          downloadResults(extractedText, ocrText);
+
+        document.getElementById("progress").textContent = "Text extraction complete!";
       } catch (error) {
-        console.error(error);
-        alert("An error occurred: " + error.message);
+        console.error("Error:", error);
+        document.getElementById("progress").textContent = "An error occurred during text extraction.";
       }
     });
   </script>
